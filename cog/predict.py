@@ -3,20 +3,18 @@
 
 import os
 import sys
-
 import time
 import subprocess
 from cog import BasePredictor, Input, Path
-
 import cv2
 import torch
 import numpy as np
 from PIL import Image
-
 from diffusers.utils import load_image
 from diffusers.models import ControlNetModel
-
 from insightface.app import FaceAnalysis
+from pipeline_stable_diffusion_xl_instantid import StableDiffusionXLInstantIDPipeline, draw_kps
+from typing import List
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from pipeline_stable_diffusion_xl_instantid import (
@@ -162,39 +160,40 @@ class Predictor(BasePredictor):
             ge=1,
             le=50,
         ),
-    ) -> Path:
-        """Run a single prediction on the model"""
+        num_images: int = Input(
+            description="Number of images to generate",
+            default=1,
+            ge=1,
+            le=4,
+        ),
+    ) -> List[Path]:
         if self.width != width or self.height != height:
-            print(f"[!] Resizing output to {width}x{height}")
             self.width = width
             self.height = height
             self.app.prepare(ctx_id=0, det_size=(self.width, self.height))
 
         face_image = load_image(str(image))
         face_image = resize_img(face_image)
-
         face_info = self.app.get(cv2.cvtColor(np.array(face_image), cv2.COLOR_RGB2BGR))
-        face_info = sorted(
-            face_info,
-            key=lambda x: (x["bbox"][2] - x["bbox"][0]) * (x["bbox"][3] - x["bbox"][1]),
-            reverse=True,
-        )[
-            0
-        ]  # only use the maximum face
+        face_info = sorted(face_info, key=lambda x: (x["bbox"][2] - x["bbox"][0]) * (x["bbox"][3] - x["bbox"][1]), reverse=True)[0]
         face_emb = face_info["embedding"]
         face_kps = draw_kps(face_image, face_info["kps"])
 
         self.pipe.set_ip_adapter_scale(ip_adapter_scale)
-        image = self.pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image_embeds=face_emb,
-            image=face_kps,
-            controlnet_conditioning_scale=controlnet_conditioning_scale,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-        ).images[0]
+        output_paths = []
+        for i in range(num_images):
+            generated_image = self.pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image_embeds=face_emb,
+                image=face_kps,
+                controlnet_conditioning_scale=controlnet_conditioning_scale,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+            ).images[0]
 
-        output_path = "result.jpg"
-        image.save(output_path)
-        return Path(output_path)
+            output_filename = f"result_{i}.jpg"
+            generated_image.save(output_filename)
+            output_paths.append(Path(output_filename))
+
+        return output_paths
